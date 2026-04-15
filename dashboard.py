@@ -13,6 +13,9 @@ st.title("Kalshi NO Bot — Paper Trading Dashboard")
 def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    from db import init_db
+    init_db(conn)
     return conn
 
 
@@ -52,6 +55,11 @@ def load_prices(market_id: str) -> pd.DataFrame:
 
 
 df = load_positions()
+
+if df.empty:
+    st.info("No data yet — run `python main.py` and wait for the first poll cycle.")
+    st.stop()
+
 resolved = df[df["resolved"] == 1]
 open_pos  = df[df["resolved"] == 0]
 
