@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Tracker: resolves open positions when markets settle.
 
@@ -27,7 +28,7 @@ def compute_pnl(entry_no_mid: float, outcome: str) -> tuple[float, float]:
 
 async def check_resolutions(
     conn: sqlite3.Connection,
-    fetch_resolution_fn: Callable[[str], Awaitable[str | None]],
+    fetch_resolution_fn: Callable[[str], Awaitable[Optional[str]]],
 ):
     """
     fetch_resolution_fn: async (market_id: str) -> 'YES' | 'NO' | None

@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Three concurrent loops:
 
@@ -110,7 +111,7 @@ async def price_loop(conn, session: aiohttp.ClientSession):
 async def resolve_loop(conn, session: aiohttp.ClientSession):
     """Checks open positions for settlement."""
     while True:
-        async def resolve_fn(market_id: str) -> str | None:
+        async def resolve_fn(market_id: str) -> Optional[str]:
             row = conn.execute(
                 "SELECT venue FROM markets WHERE market_id = ?", (market_id,)
             ).fetchone()

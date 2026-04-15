@@ -13,7 +13,7 @@ Kalshi exposes no_bid/no_ask at the market level directly.
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional, Union
 
 import aiohttp
 
@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 # ── shared ────────────────────────────────────────────────────────────────────
 
-async def _get(session: aiohttp.ClientSession, url: str, **kwargs) -> dict | list:
+async def _get(session: aiohttp.ClientSession, url: str, **kwargs) -> Union[dict, list]:
     for attempt in range(MAX_RETRIES):
         try:
             async with session.get(url, **kwargs) as resp:
@@ -41,14 +41,14 @@ async def _get(session: aiohttp.ClientSession, url: str, **kwargs) -> dict | lis
             await asyncio.sleep(wait)
 
 
-def _f(v) -> float | None:
+def _f(v) -> Optional[float]:
     try:
         return float(v)
     except (TypeError, ValueError):
         return None
 
 
-def _book_snap(bid: float | None, ask: float | None, volume: float | None) -> dict:
+def _book_snap(bid: Optional[float], ask: Optional[float], volume: Optional[float]) -> dict:
     mid    = ((bid + ask) / 2) if bid is not None and ask is not None else None
     spread = (ask - bid)       if bid is not None and ask is not None else None
     return {"no_bid": bid, "no_ask": ask, "no_mid": mid, "no_spread": spread, "volume_24h": volume}
@@ -129,7 +129,7 @@ async def fetch_polymarket_no_book(
 
 async def fetch_polymarket_resolution(
     session: aiohttp.ClientSession, market_id: str
-) -> str | None:
+) -> Optional[str]:
     data = await _get(session, f"{POLYMARKET_GAMMA_API}/markets/{market_id}")
     if not (data.get("closed") and data.get("resolutionTime")):
         return None
@@ -193,7 +193,7 @@ async def fetch_kalshi_no_book(
 
 async def fetch_kalshi_resolution(
     session: aiohttp.ClientSession, market_ticker: str
-) -> str | None:
+) -> Optional[str]:
     data = await _get(session, f"{KALSHI_API}/markets/{market_ticker}")
     m = data.get("market", {})
     if m.get("status") == "finalized":

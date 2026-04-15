@@ -1,3 +1,4 @@
+from typing import Optional
 """
 Strategy: paper-buy NO on every new non-sports market.
 
@@ -34,14 +35,14 @@ def is_sports(market: dict) -> bool:
     return any(series.startswith(p) for p in EXCLUDED_SERIES_PREFIXES)
 
 
-def _dec(v) -> Decimal | None:
+def _dec(v) -> Optional[Decimal]:
     try:
         return Decimal(str(v))
     except (InvalidOperation, TypeError):
         return None
 
 
-def no_mid(market: dict) -> Decimal | None:
+def no_mid(market: dict) -> Optional[Decimal]:
     bid = _dec(market.get("no_bid"))
     ask = _dec(market.get("no_ask"))
     if bid is not None and ask is not None:
@@ -49,7 +50,7 @@ def no_mid(market: dict) -> Decimal | None:
     return None
 
 
-def no_spread(market: dict) -> Decimal | None:
+def no_spread(market: dict) -> Optional[Decimal]:
     bid = _dec(market.get("no_bid"))
     ask = _dec(market.get("no_ask"))
     if bid is not None and ask is not None:
