@@ -1,10 +1,10 @@
 POLYMARKET_GAMMA_API = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_API  = "https://clob.polymarket.com"
-KALSHI_API           = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_API           = "https://api.elections.kalshi.com/trade-api/v2"  # public endpoint
 
-POLL_INTERVAL_SECONDS  = 60    # new market ingest
-PRICE_POLL_SECONDS     = 30    # NO order book snapshots
-RESOLVE_CHECK_SECONDS  = 300   # resolution polling
+POLL_INTERVAL_SECONDS  = 60
+PRICE_POLL_SECONDS     = 30
+RESOLVE_CHECK_SECONDS  = 300
 
 PAGE_SIZE    = 500
 MAX_RETRIES  = 3

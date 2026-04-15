@@ -1,14 +1,18 @@
 """
-Connectors for Polymarket and Kalshi.
+Connectors for Polymarket (Gamma + CLOB) and Kalshi.
 
-Polymarket has two relevant APIs:
-  - Gamma API  (gamma-api.polymarket.com)  — market metadata, token IDs
-  - CLOB API   (clob.polymarket.com)       — live order books per token
+Polymarket Gamma response shape (key fields):
+  id              — market ID
+  question        — title
+  clobTokenIds    — ["<yes_token_id>", "<no_token_id>"]
+  outcomes        — ["Yes", "No"]
+  outcomePrices   — ["0.65", "0.35"]  (parallel to outcomes; YES is [0], NO is [1])
+  endDate         — close time
+  active/closed   — status booleans
 
-NO is a first-class CLOB token with its own token_id. We store that ID at
-ingest and poll it directly for bid/ask — never derive from YES.
-
-Kalshi exposes no_bid/no_ask at the market level directly.
+Kalshi public endpoint: api.elections.kalshi.com (no auth required)
+Kalshi market response includes no_bid_dollars / no_ask_dollars directly.
+Kalshi orderbook returns only bids; NO ask = 1.00 - best_yes_bid.
 """
 
 import asyncio
@@ -58,31 +62,34 @@ def _book_snap(bid: Optional[float], ask: Optional[float], volume: Optional[floa
 
 async def fetch_polymarket_markets(session: aiohttp.ClientSession) -> AsyncIterator[dict]:
     """
-    Yields normalized market dicts including no_token_id.
-    Skips non-binary markets and markets with no NO token.
+    Gamma API response uses parallel arrays:
+      clobTokenIds[0] = YES token, clobTokenIds[1] = NO token
+      outcomePrices[0] = YES price, outcomePrices[1] = NO price
     """
     offset = 0
     while True:
         data = await _get(session, f"{POLYMARKET_GAMMA_API}/markets", params={
-            "active": "true",
-            "closed": "false",
-            "limit": PAGE_SIZE,
-            "offset": offset,
+            "active":  "true",
+            "closed":  "false",
+            "limit":   PAGE_SIZE,
+            "offset":  offset,
         })
         if not data:
             break
 
         for m in data:
-            tokens = m.get("tokens", [])
-            if len(tokens) != 2:
+            token_ids     = m.get("clobTokenIds", [])
+            outcome_prices = m.get("outcomePrices", [])
+
+            # must be binary (exactly 2 tokens) with CLOB enabled
+            if len(token_ids) != 2 or not m.get("enableOrderBook", True):
                 continue
 
-            no_tok = next((t for t in tokens if t.get("outcome", "").upper() == "NO"), None)
-            if not no_tok or not no_tok.get("token_id"):
-                continue
+            no_token_id = token_ids[1]   # NO is always index 1
+            no_price    = _f(outcome_prices[1]) if len(outcome_prices) > 1 else None
 
-            # initial price comes from gamma — CLOB price update follows in price_loop
-            no_price = _f(no_tok.get("price"))
+            if not no_token_id or no_price is None:
+                continue
 
             yield {
                 "market_id":   m["id"],
@@ -90,9 +97,9 @@ async def fetch_polymarket_markets(session: aiohttp.ClientSession) -> AsyncItera
                 "title":       m.get("question", ""),
                 "category":    m.get("category"),
                 "close_time":  m.get("endDate"),
-                "no_token_id": no_tok["token_id"],
+                "no_token_id": no_token_id,
                 "condition_id": m.get("conditionId"),
-                # snapshot at ingest — spread unknown until CLOB poll
+                # gamma price is mid approximation until CLOB poll
                 "no_bid":      no_price,
                 "no_ask":      no_price,
                 "no_mid":      no_price,
@@ -108,23 +115,14 @@ async def fetch_polymarket_markets(session: aiohttp.ClientSession) -> AsyncItera
 async def fetch_polymarket_no_book(
     session: aiohttp.ClientSession, no_token_id: str
 ) -> dict:
-    """
-    Hits the CLOB order book for the NO token directly.
-    Returns a snap dict with no_bid, no_ask, no_mid, no_spread.
-    """
+    """Hits the CLOB order book for the NO token directly."""
     data = await _get(session, f"{POLYMARKET_CLOB_API}/book",
                       params={"token_id": no_token_id})
-
-    bids = data.get("bids", [])   # [{price, size}, ...]
+    bids = data.get("bids", [])
     asks = data.get("asks", [])
-
     best_bid = _f(bids[0]["price"]) if bids else None
     best_ask = _f(asks[0]["price"]) if asks else None
-
-    # CLOB also returns last trade volume if needed
-    volume = _f(data.get("volume"))
-
-    return _book_snap(best_bid, best_ask, volume)
+    return _book_snap(best_bid, best_ask, _f(data.get("volume")))
 
 
 async def fetch_polymarket_resolution(
@@ -133,31 +131,41 @@ async def fetch_polymarket_resolution(
     data = await _get(session, f"{POLYMARKET_GAMMA_API}/markets/{market_id}")
     if not (data.get("closed") and data.get("resolutionTime")):
         return None
-    tokens = data.get("tokens", [])
-    for t in tokens:
-        if _f(t.get("price")) == 1.0:
-            return t.get("outcome", "").upper()
+    # outcomePrices settle to "1" for winner, "0" for loser
+    prices = data.get("outcomePrices", [])
+    if len(prices) == 2:
+        if _f(prices[1]) == 1.0:
+            return "NO"
+        if _f(prices[0]) == 1.0:
+            return "YES"
     return None
 
 
 # ── Kalshi ────────────────────────────────────────────────────────────────────
 
 async def fetch_kalshi_markets(session: aiohttp.ClientSession) -> AsyncIterator[dict]:
+    """
+    Public endpoint — no auth required.
+    Market summary includes no_bid_dollars / no_ask_dollars directly.
+    """
     cursor = None
     while True:
         params = {"limit": PAGE_SIZE, "status": "open"}
         if cursor:
             params["cursor"] = cursor
 
-        data   = await _get(session, f"{KALSHI_API}/markets", params=params)
+        data    = await _get(session, f"{KALSHI_API}/markets", params=params)
         markets = data.get("markets", [])
         if not markets:
             break
 
         for m in markets:
-            no_bid  = _f(m.get("no_bid"))
-            no_ask  = _f(m.get("no_ask"))
-            snap    = _book_snap(no_bid, no_ask, _f(m.get("volume")))
+            no_bid = _f(m.get("no_bid_dollars"))
+            no_ask = _f(m.get("no_ask_dollars"))
+            snap   = _book_snap(no_bid, no_ask, _f(m.get("volume_24h_fp")))
+
+            if snap["no_mid"] is None:
+                continue
 
             yield {
                 "market_id":   m["ticker"],
@@ -165,7 +173,7 @@ async def fetch_kalshi_markets(session: aiohttp.ClientSession) -> AsyncIterator[
                 "title":       m.get("title", ""),
                 "category":    m.get("category"),
                 "close_time":  m.get("close_time"),
-                "no_token_id": m["ticker"],  # for Kalshi, ticker IS the poll key
+                "no_token_id": m["ticker"],
                 "condition_id": None,
                 **snap,
             }
@@ -178,17 +186,23 @@ async def fetch_kalshi_markets(session: aiohttp.ClientSession) -> AsyncIterator[
 async def fetch_kalshi_no_book(
     session: aiohttp.ClientSession, market_ticker: str
 ) -> dict:
-    """Polls live NO book for a single Kalshi market."""
+    """
+    Orderbook only returns bids.
+    NO ask is implied: 1.00 - best_yes_bid
+    Response: orderbook_fp.no_dollars = [[price_str, count_str], ...]
+              best bid is the LAST element (sorted worst → best)
+    """
     data = await _get(session, f"{KALSHI_API}/markets/{market_ticker}/orderbook")
-    book = data.get("orderbook", {})
+    ob   = data.get("orderbook_fp", {})
 
-    no_bids = book.get("no", [])   # [[price, size], ...]
-    no_asks = book.get("yes", [])  # Kalshi: YES asks = NO bids from other side
+    no_dollars  = ob.get("no_dollars", [])
+    yes_dollars = ob.get("yes_dollars", [])
 
-    best_bid = _f(no_bids[0][0]) if no_bids else None
-    best_ask = _f(no_asks[0][0]) if no_asks else None
+    best_no_bid  = _f(no_dollars[-1][0])  if no_dollars  else None
+    best_yes_bid = _f(yes_dollars[-1][0]) if yes_dollars else None
+    implied_no_ask = (1.0 - best_yes_bid) if best_yes_bid is not None else None
 
-    return _book_snap(best_bid, best_ask, None)
+    return _book_snap(best_no_bid, implied_no_ask, None)
 
 
 async def fetch_kalshi_resolution(
@@ -202,7 +216,7 @@ async def fetch_kalshi_resolution(
     return None
 
 
-# ── routing maps (used by main) ───────────────────────────────────────────────
+# ── routing maps ──────────────────────────────────────────────────────────────
 
 MARKET_FETCHERS = {
     "polymarket": fetch_polymarket_markets,
